@@ -1,0 +1,11 @@
+[default]
+region = eu-west-1
+mfa_serial = arn:aws:iam::{{ source_account_id }}:mfa/{{ username }}
+aws_account_id = {{ source_account_id }}
+
+{% for account in accounts %}
+[profile {{ account.Name|replace(' ', '') }}]
+aws_acount_id = {{ account.Id }}
+role_arn = arn:aws:iam::{{ account.Id}}:role/{{ role_name }}
+source_profile = default
+{% endfor %}
