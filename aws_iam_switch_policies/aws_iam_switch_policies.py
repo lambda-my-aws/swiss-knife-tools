@@ -20,6 +20,7 @@ from ozone.resolvers.organizations import (
 )
 
 from argparse import ArgumentParser
+import re
 
 PARSER = ArgumentParser('Create IAM Policies to switch roles for a given AWS Organization Unit')
 PARSER.add_argument(
@@ -73,28 +74,60 @@ def switch_policy(accounts, role_name):
         'Statement': []
     }
     resources = []
-    for account in accounts:
-        resources.append(f'arn:aws:iam::{account["Id"]}:role/{role_name}')
+    if isinstance(accounts, list):
+        for account in accounts:
+            resources.append(f'arn:aws:iam::{account["Id"]}:role/{role_name}')
+    elif isinstance(accounts, dict):
+        resources.append(f'arn:aws:iam::{accounts["Id"]}:role/{role_name}')
 
     statement = {
         'Sid': f'{role_name.lower()}To{OU_NAME}',
         'Effect': 'Allow',
         'Action': ['sts:AssumeRole'],
-        'Resource': resources
+        'Resource': resources,
+        "Condition": {
+            "BoolIfExists": {
+                "aws:MultiFactorAuthPresent": "true"
+            },
+            "NumericLessThan": {
+                "aws:MultiFactorAuthAge": "7200"
+            }
+        }
     }
     policy_document['Statement'].append(statement)
     return policy_document
 
 
 
+PATTERN = re.compile(r'[^a-zA-Z0-9]')
 POLICIES = []
+if accounts:
+    for account in accounts:
+        account_name = PATTERN.sub('', account['Name']).lower()
+        for role in ROLE_NAMES:
+            policy_res = ManagedPolicy(
+                f'{role.title()}AccessTo{account_name}',
+                ManagedPolicyName=f'{POLICY_NAME_PREFIX}.{account_name}-{role}.access',
+                PolicyDocument=switch_policy(account, role),
+                Path=r'/SwitchTo/' + role + f'/{account_name}/',
+                Description=f"Allows AssumeRole for role {role} to account {account_name} within OU {ARGS.ou_name}"
+            )
+            POLICIES.append(policy_res)
+
+
+OU_NAME = ''.join(x.lower().title() for x in OU_NAME.split('/'))
+POLICY_NAME_PREFIX = '.'.join(x.lower() for x in ARGS.ou_name.split('/'))
+if POLICY_NAME_PREFIX.startswith('.'):
+    POLICY_NAME_PREFIX = POLICY_NAME_PREFIX[1:]
+
 if accounts:
     for role in ROLE_NAMES:
         policy_res = ManagedPolicy(
             f'{role.title()}AccessTo{OU_NAME}',
             ManagedPolicyName=f'{POLICY_NAME_PREFIX}-{role}.access',
             PolicyDocument=switch_policy(accounts, role),
-            Path=r'/SwitchTo/' + role + '/'
+            Path=r'/SwitchTo/' + role + r'/',
+            Description=f"Allows AssumeRole for role {role} to all accounts in OU {ARGS.ou_name}"
         )
         POLICIES.append(policy_res)
 
