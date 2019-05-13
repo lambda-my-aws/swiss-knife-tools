@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 
 from troposphere import (
     Template,
@@ -8,7 +9,7 @@ from troposphere import (
 )
 
 from troposphere.iam import (
-    Policy
+    ManagedPolicy
 )
 
 from ozone.outputs import object_outputs
@@ -19,6 +20,7 @@ from ozone.resolvers.organizations import (
 )
 
 from argparse import ArgumentParser
+import re
 
 PARSER = ArgumentParser('Create IAM Policies to switch roles for a given AWS Organization Unit')
 PARSER.add_argument(
@@ -34,8 +36,15 @@ PARSER.add_argument(
 )
 ARGS = PARSER.parse_args()
 
-TEMPLATE = Template()
-TEMPLATE.set_description('Template with the policies for switch roles to accounts')
+OU_NAME = ARGS.ou_name
+if not ARGS.ou_name.startswith('/'):
+    OU_NAME = '/' + ARGS.ou_name
+
+OU_NAME = ''.join(x.lower().title() for x in OU_NAME.split('/'))
+POLICY_NAME_PREFIX = '.'.join(x.lower() for x in ARGS.ou_name.split('/'))
+if POLICY_NAME_PREFIX.startswith('.'):
+    POLICY_NAME_PREFIX = POLICY_NAME_PREFIX[1:]
+
 ORG = find_org_in_tree(ARGS.ou_name)
 if ARGS.as_root:
     accounts = get_all_accounts_in_ou_and_sub(ORG['Id'])
@@ -55,40 +64,81 @@ else:
     ROLE_NAMES = ARGS.role
 
 
-OU_NAME = ''.join(x.lower().title() for x in ARGS.ou_name.split('/'))
-OU_POLICY_NAME = '.'.join(x.lower() for x in ARGS.ou_name.split('/'))
-
 def switch_policy(accounts, role_name):
     """
     Generates the template policy document for the switch role
     """
 
     policy_document = {
-        'Version': '2017-10-17',
-        'Statements': []
+        'Version': '2012-10-17',
+        'Statement': []
     }
     resources = []
-    for account in accounts:
-        resources.append(f'arn:aws:iam::{account["Id"]}:role/{role_name}')
+    if isinstance(accounts, list):
+        for account in accounts:
+            resources.append(f'arn:aws:iam::{account["Id"]}:role/{role_name}')
+    elif isinstance(accounts, dict):
+        resources.append(f'arn:aws:iam::{accounts["Id"]}:role/{role_name}')
 
     statement = {
-        'Sid': f'{role_name.lower()}-to-{OU_POLICY_NAME}',
+        'Sid': f'{role_name.lower()}To{OU_NAME}',
         'Effect': 'Allow',
         'Action': ['sts:AssumeRole'],
-        'Resource': resources
+        'Resource': resources,
+        "Condition": {
+            "BoolIfExists": {
+                "aws:MultiFactorAuthPresent": "true"
+            },
+            "NumericLessThan": {
+                "aws:MultiFactorAuthAge": "7200"
+            }
+        }
     }
-    policy_document['Statements'].append(statement)
+    policy_document['Statement'].append(statement)
     return policy_document
 
 
+
+PATTERN = re.compile(r'[^a-zA-Z0-9]')
 POLICIES = []
+if accounts:
+    for account in accounts:
+        account_name = PATTERN.sub('', account['Name']).lower()
+        for role in ROLE_NAMES:
+            policy_res = ManagedPolicy(
+                f'{role.title()}AccessTo{account_name}',
+                ManagedPolicyName=f'{POLICY_NAME_PREFIX}.{account_name}-{role}.access',
+                PolicyDocument=switch_policy(account, role),
+                Path=r'/SwitchTo/' + role + f'/{account_name}/',
+                Description=f"Allows AssumeRole for role {role} to account {account_name} within OU {ARGS.ou_name}"
+            )
+            POLICIES.append(policy_res)
+
+
+OU_NAME = ''.join(x.lower().title() for x in OU_NAME.split('/'))
+POLICY_NAME_PREFIX = '.'.join(x.lower() for x in ARGS.ou_name.split('/'))
+if POLICY_NAME_PREFIX.startswith('.'):
+    POLICY_NAME_PREFIX = POLICY_NAME_PREFIX[1:]
 
 if accounts:
     for role in ROLE_NAMES:
-        policy_res = TEMPLATE.add_resource(Policy(
+        policy_res = ManagedPolicy(
             f'{role.title()}AccessTo{OU_NAME}',
-            PolicyName=f'platform-dev.{role}.access',
-            PolicyDocument=switch_policy(accounts, role)
-        ))
+            ManagedPolicyName=f'{POLICY_NAME_PREFIX}-{role}.access',
+            PolicyDocument=switch_policy(accounts, role),
+            Path=r'/SwitchTo/' + role + r'/',
+            Description=f"Allows AssumeRole for role {role} to all accounts in OU {ARGS.ou_name}"
+        )
+        POLICIES.append(policy_res)
 
-print (TEMPLATE.to_yaml())
+
+TEMPLATE = Template()
+TEMPLATE.set_description('Template with the policies for switch roles to accounts')
+
+for counti, policy in enumerate(POLICIES):
+    TEMPLATE.add_resource(policy)
+    TEMPLATE.add_output(object_outputs(policy, supports_arn=False))
+
+file_name = ARGS.ou_name.replace('/', '_') + '.yml'
+with open(file_name, 'w') as fd:
+    fd.write(TEMPLATE.to_yaml())
