@@ -135,9 +135,6 @@ if accounts:
 TEMPLATE = Template()
 TEMPLATE.set_description('Template with the policies for switch roles to accounts')
 
-for counti, policy in enumerate(POLICIES):
-    TEMPLATE.add_resource(policy)
-
 file_name = ARGS.ou_name.replace('/', '_') + '.yml'
 with open(file_name, 'w') as fd:
     fd.write(TEMPLATE.to_yaml())
