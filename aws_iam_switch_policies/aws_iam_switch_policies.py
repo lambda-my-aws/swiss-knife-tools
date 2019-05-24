@@ -137,7 +137,6 @@ TEMPLATE.set_description('Template with the policies for switch roles to account
 
 for counti, policy in enumerate(POLICIES):
     TEMPLATE.add_resource(policy)
-    TEMPLATE.add_output(object_outputs(policy, supports_arn=False))
 
 file_name = ARGS.ou_name.replace('/', '_') + '.yml'
 with open(file_name, 'w') as fd:
